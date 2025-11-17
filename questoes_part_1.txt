@@ -1,3 +1,7 @@
+Higor Stefany dos Santos Nóbrega
+Leticia Santos Camargo
+Pedro Felipe de Moraes Carrijo
+Raniere Luiz Pereira Neto
 1) O trabalho envolve a implementação de uma API para um sistema de Garçom
 Eletrônico. Nesta primeira parte:
 a) Defina a linguagem de programação e framework a ser utilizado no projeto
