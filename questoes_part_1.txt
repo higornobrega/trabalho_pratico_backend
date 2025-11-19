@@ -1,11 +1,7 @@
+Alunos:
 Higor Stefany dos Santos Nóbrega
 Leticia Santos Camargo
 Pedro Felipe de Moraes Carrijo
 Raniere Luiz Pereira Neto
-1) O trabalho envolve a implementação de uma API para um sistema de Garçom
-Eletrônico. Nesta primeira parte:
-a) Defina a linguagem de programação e framework a ser utilizado no projeto
-Linguagem: Python
-Framework: Django Rest Framework
-b) Elabore a camada de classes de domínio da aplicação (Classes DTO)
+Repositório:
 https://github.com/higornobrega/trabalho_pratico_backend
