@@ -4,6 +4,9 @@ from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.filters import OrderingFilter, SearchFilter
 from rest_framework.response import Response
+from django.db.models import Count, Sum
+from rest_framework.views import APIView
+from django.db.models.functions import ExtractHour
 
 from .models import (Caixa, Cardapio, Categoria, Cliente, Conta, Cozinha,
                      Garcom, Gerente, ItemCardapio, ItemPedido, Mesa,
@@ -421,3 +424,358 @@ class PagamentoChequeViewSet(viewsets.ModelViewSet):
     filter_backends = [DjangoFilterBackend, OrderingFilter]
     filterset_fields = ['conta', 'numero']
     ordering_fields = ['id', 'valor', 'data']
+
+class RankGarconAtendimentoAPIView(APIView):
+    """
+    Endpoint: GET /rank-garcon-atendimento/
+    Rank de garçons por número de mesas atendidas.
+    """
+
+    @extend_schema(description='Rank de garçons por quantidade de mesas atendidas')
+    def get(self, request):
+        # Anota em cada garçom:
+        # - total_mesas: quantas mesas estão vinculadas a ele
+        # - total_pedidos: quantos pedidos passaram por essas mesas
+        queryset = (
+            Garcom.objects
+            .annotate(
+                total_mesas=Count('mesas', distinct=True),
+                total_pedidos=Count('mesas__contas__pedidos', distinct=True),
+            )
+            .order_by('-total_mesas', '-total_pedidos', 'nome')
+        )
+
+        resultado = [
+            {
+                "garcom_id": garcom.id,
+                "garcom_nome": garcom.nome,
+                "restaurante": garcom.restaurante.nome if garcom.restaurante else None,
+                "total_mesas": garcom.total_mesas,
+                "total_pedidos": garcom.total_pedidos,
+            }
+            for garcom in queryset
+        ]
+
+        return Response(resultado, status=status.HTTP_200_OK)
+
+class ItemMaisPedidoAPIView(APIView):
+    """
+    Endpoint: GET /item-mais-pedido/
+    Retorna o item de cardápio mais pedido.
+
+    Lógica geral:
+    - Parte do modelo ItemPedido, que representa cada item lançado em um pedido,
+      contendo a quantidade e a referência para um ItemCardapio.
+    - A consulta agrupa todos os registros de ItemPedido por item de cardápio,
+      usando o método .values('item_cardapio', 'item_cardapio__nome', 'item_cardapio__preco').
+      Isso faz com que cada linha do resultado represente um item do cardápio,
+      e não um ItemPedido isolado.
+    - Em seguida, é usado .annotate(total_quantidade=Sum('quantidade')) para somar
+      a quantidade de cada ItemPedido daquele item de cardápio. Assim, obtemos
+      a quantidade total pedida de cada produto.
+    - A lista resultante é ordenada em ordem decrescente por total_quantidade
+      (.order_by('-total_quantidade')), de forma que o item mais pedido aparece
+      na primeira posição.
+    - Se não houver nenhum ItemPedido cadastrado, o endpoint retorna uma mensagem
+      informando que não há dados.
+    - Caso contrário, é selecionado o primeiro registro (o “campeão” de pedidos),
+      e montada uma resposta com:
+        * id do item de cardápio,
+        * nome,
+        * preço,
+        * quantidade total pedida.
+    """
+
+    @extend_schema(description='Retorna o item de cardápio mais pedido')
+    def get(self, request):
+        # Agrupa os itens de pedido por item_cardapio
+        agregados = (
+            ItemPedido.objects
+            .values('item_cardapio', 'item_cardapio__nome', 'item_cardapio__preco')
+            .annotate(total_quantidade=Sum('quantidade'))
+            .order_by('-total_quantidade')
+        )
+
+        if not agregados:
+            return Response(
+                {"detail": "Nenhum item de pedido encontrado."},
+                status=status.HTTP_200_OK,
+            )
+
+        top = agregados[0]
+
+        data = {
+            "item_cardapio_id": top["item_cardapio"],
+            "nome": top["item_cardapio__nome"],
+            "preco": top["item_cardapio__preco"],
+            "total_quantidade": top["total_quantidade"],
+        }
+
+        return Response(data, status=status.HTTP_200_OK)
+
+class TipoPagamentoMaisUsadoAPIView(APIView):
+    """
+    Endpoint: GET /tipo-pagamente-mais-usado/
+
+    Retorna qual tipo de pagamento (dinheiro, cartão ou cheque)
+    foi utilizado mais vezes, com o total de usos de cada um.
+    """
+
+    @extend_schema(description='Retorna o tipo de pagamento mais usado')
+    def get(self, request):
+        stats = [
+            {"tipo": "dinheiro", "total": PagamentoDinheiro.objects.count()},
+            {"tipo": "cartao", "total": PagamentoCartao.objects.count()},
+            {"tipo": "cheque", "total": PagamentoCheque.objects.count()},
+        ]
+
+        # Se não houver nenhum pagamento ainda
+        if all(item["total"] == 0 for item in stats):
+            return Response(
+                {
+                    "detail": "Nenhum pagamento registrado.",
+                    "tipos": {item["tipo"]: item["total"] for item in stats},
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        # Pega o tipo com maior quantidade
+        top = max(stats, key=lambda item: item["total"])
+
+        data = {
+            "tipo_mais_usado": top["tipo"],
+            "total": top["total"],
+            "detalhes": {item["tipo"]: item["total"] for item in stats},
+        }
+
+        return Response(data, status=status.HTTP_200_OK)
+
+class ValorMedioPedidosAPIView(APIView):
+    """
+    Endpoint: GET /valor-medio-pedidos/
+
+    Calcula o valor médio dos pedidos.
+    Para cada pedido, soma (quantidade * preço) de cada ItemPedido
+    e, em seguida, faz a média entre todos os pedidos.
+    """
+
+    @extend_schema(description='Retorna o valor médio dos pedidos')
+    def get(self, request):
+        pedidos = Pedido.objects.prefetch_related('itens__item_cardapio').all()
+
+        if not pedidos.exists():
+            return Response(
+                {
+                    "detail": "Nenhum pedido encontrado.",
+                    "quantidade_pedidos": 0,
+                    "valor_medio": 0.0,
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        totais = []
+
+        for pedido in pedidos:
+            total_pedido = 0.0
+            for item in pedido.itens.all():
+                total_pedido += item.quantidade * item.item_cardapio.preco
+            totais.append(total_pedido)
+
+        valor_medio = sum(totais) / len(totais)
+
+        data = {
+            "quantidade_pedidos": len(totais),
+            "valor_medio": round(valor_medio, 2),
+        }
+
+        return Response(data, status=status.HTTP_200_OK)
+
+class CategoriaPopularAPIView(APIView):
+    """
+    Endpoint: GET /categoria-popular/
+
+    Retorna a categoria de cardápio mais popular, ou seja,
+    aquela cujos itens somam a maior quantidade em todos os pedidos.
+    """
+
+    @extend_schema(description='Retorna a categoria de cardápio mais popular')
+    def get(self, request):
+
+        agregados = (
+            ItemPedido.objects
+            .values('item_cardapio__categoria', 'item_cardapio__categoria__nome')
+            .annotate(total_quantidade=Sum('quantidade'))
+            .order_by('-total_quantidade')
+        )
+
+        if not agregados:
+            return Response(
+                {
+                    "detail": "Nenhum item de pedido encontrado.",
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        top = agregados[0]
+
+        total_qtd = top["total_quantidade"]
+        total_qtd = int(total_qtd) if total_qtd is not None else 0
+
+        data = {
+            "categoria_id": top["item_cardapio__categoria"],
+            "nome": top["item_cardapio__categoria__nome"],
+            "total_itens_pedidos": total_qtd,
+        }
+
+        return Response(data, status=status.HTTP_200_OK)
+
+class HorariosMaisPedidosAPIView(APIView):
+    """
+    Endpoint: GET /horarios-mais-pedidos/
+
+    Agrupa os pedidos por hora do dia (0–23), com base no campo
+    `horario_pedido` do modelo Pedido, e retorna um ranking dos
+    horários com mais pedidos.
+
+    Lógica:
+    - Usa ExtractHour para extrair apenas a hora do campo datetime.
+    - Agrupa por essa hora (.values('hora')).
+    - Conta quantos pedidos existem em cada hora (Count('id')).
+    - Ordena do horário com mais pedidos para o com menos.
+    - Retorna também o horário de maior movimento destacado.
+    """
+
+    @extend_schema(
+        description='Retorna um ranking de horários do dia com mais pedidos (baseado em horario_pedido)'
+    )
+    def get(self, request):
+        agregados = (
+            Pedido.objects
+            .annotate(hora=ExtractHour('horario_pedido'))
+            .values('hora')
+            .annotate(total_pedidos=Count('id'))
+            .order_by('-total_pedidos', 'hora')
+        )
+
+        if not agregados:
+            return Response(
+                {
+                    "detail": "Nenhum pedido encontrado.",
+                    "horarios": [],
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        horarios = [
+            {
+                "hora": item["hora"],
+                "total_pedidos": item["total_pedidos"],
+            }
+            for item in agregados
+        ]
+
+        data = {
+            "hora_mais_movimento": horarios[0],
+            "horarios": horarios,
+        }
+
+        return Response(data, status=status.HTTP_200_OK)
+
+class CardapioMaisUsadoAPIView(APIView):
+    """
+    Endpoint: GET /cardapio-mais-usado/
+
+    Retorna o cardápio mais usado, ou seja, aquele cujos itens de cardápio
+    somam a maior quantidade em todos os itens de pedido.
+
+    A agregação parte de ItemPedido -> item_cardapio -> cardapio.
+    """
+
+    @extend_schema(description='Retorna o cardápio mais usado nos pedidos')
+    def get(self, request):
+        agregados = (
+            ItemPedido.objects
+            .values(
+                'item_cardapio__cardapio',
+                'item_cardapio__cardapio__gerente__nome',
+            )
+            .annotate(total_quantidade=Sum('quantidade'))
+            .order_by('-total_quantidade')
+        )
+
+        if not agregados:
+            return Response(
+                {
+                    "detail": "Nenhum item de pedido encontrado.",
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        top = agregados[0]
+
+        total_qtd = top["total_quantidade"]
+        total_qtd = int(total_qtd) if total_qtd is not None else 0
+
+        data = {
+            "cardapio_id": top["item_cardapio__cardapio"],
+            "gerente_nome": top["item_cardapio__cardapio__gerente__nome"],
+            "descricao": f"Cardápio do gerente {top['item_cardapio__cardapio__gerente__nome']}",
+            "total_itens_pedidos": total_qtd,
+        }
+
+        return Response(data, status=status.HTTP_200_OK)
+
+class CategoriaMaisItensCardapioAPIView(APIView):
+    """
+    Endpoint: GET /categoria-mais-itens_cardapio/
+
+    Retorna a categoria que possui o maior número de itens de cardápio
+    associados.
+
+    Lógica:
+    - Parte do modelo Categoria.
+    - Usa o related_name='itens' definido em ItemCardapio.categoria para
+      contar quantos itens cada categoria possui.
+    - A consulta anota um campo calculado `total_itens` com Count('itens').
+    - Ordena decrescentemente por `total_itens` para que a categoria com
+      mais itens venha primeiro.
+    - Se não houver categorias ou itens cadastrados, retorna uma mensagem
+      informando que não há dados.
+    - Caso contrário, retorna a categoria “campeã” e, opcionalmente, o
+      ranking completo com id, nome e total de itens.
+    """
+
+    @extend_schema(
+        description='Retorna a categoria com maior quantidade de itens de cardápio'
+    )
+    def get(self, request):
+        categorias = (
+            Categoria.objects
+            .annotate(total_itens=Count('itens'))
+            .order_by('-total_itens', 'nome')
+        )
+
+        if not categorias:
+            return Response(
+                {
+                    "detail": "Nenhuma categoria encontrada.",
+                    "categorias": [],
+                },
+                status=status.HTTP_200_OK,
+            )
+
+        ranking = [
+            {
+                "categoria_id": cat.id,
+                "nome": cat.nome,
+                "total_itens_cardapio": cat.total_itens,
+            }
+            for cat in categorias
+        ]
+
+        data = {
+            "categoria_campea": ranking[0],
+            "categorias": ranking,
+        }
+
+        return Response(data, status=status.HTTP_200_OK)

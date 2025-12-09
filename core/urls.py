@@ -34,5 +34,37 @@ router.register(r'pagamentos-cartao', views.PagamentoCartaoViewSet)
 router.register(r'pagamentos-cheque', views.PagamentoChequeViewSet)
 
 urlpatterns = [
+    path(
+        'rank-garcon-atendimento/',views.RankGarconAtendimentoAPIView.as_view(),
+        name='rank-garcon-atendimento'
+    ),
+    path(
+        'item-mais-pedido/', views.ItemMaisPedidoAPIView.as_view(),
+        name='item-mais-pedido',
+    ),
+    path(
+        'tipo-pagamente-mais-usado/', views.TipoPagamentoMaisUsadoAPIView.as_view(),
+        name='tipo-pagamente-mais-usado',
+    ),
+    path(
+        'valor-medio-pedidos/', views.ValorMedioPedidosAPIView.as_view(),
+        name='valor-medio-pedidos',
+    ),
+    path(
+        'categoria-popular/', views.CategoriaPopularAPIView.as_view(),
+        name='categoria-popular',
+    ),
+    path(
+        'horarios-mais-pedidos/', views.HorariosMaisPedidosAPIView.as_view(),
+        name='horarios-mais-pedidos',
+    ),
+    path(
+        'cardapio-mais-usado/', views.CardapioMaisUsadoAPIView.as_view(),
+        name='cardapio-mais-usado',
+    ),
+    path(
+        'categoria-mais-itens_cardapio/', views.CategoriaMaisItensCardapioAPIView.as_view(),
+        name='categoria-mais-itens_cardapio',
+    ),
     path('', include(router.urls)),
 ]
