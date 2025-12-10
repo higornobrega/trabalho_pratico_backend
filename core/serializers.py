@@ -20,6 +20,7 @@ class RestauranteSerializer(serializers.ModelSerializer):
     class Meta:
         model = Restaurante
         fields = ['id', 'nome']
+    
 
 
 class GarcomSerializer(serializers.ModelSerializer):

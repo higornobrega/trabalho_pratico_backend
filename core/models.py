@@ -14,7 +14,6 @@ class Usuario(models.Model):
 
 
 class Restaurante(models.Model):
-    # O diagrama não mostra atributos, mas um nome ajuda no domínio
     nome = models.CharField(max_length=100)
 
     def __str__(self):
@@ -30,7 +29,7 @@ class Garcom(Usuario):
     restaurante = models.ForeignKey(
         Restaurante,
         related_name='garcons',
-        on_delete=models.PROTECT,
+        on_delete=models.CASCADE,
     )
 
 
@@ -91,7 +90,7 @@ class Cardapio(models.Model):
     """
     Cada gerente define exatamente um cardápio (1:1).
     """
-    gerente = models.OneToOneField(
+    gerente = models.ForeignKey(
         Gerente,
         related_name='cardapio',
         on_delete=models.PROTECT,
